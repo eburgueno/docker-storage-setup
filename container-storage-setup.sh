@@ -712,32 +712,60 @@ scan_disks() {
 }
 
 create_partition_sfdisk(){
-  local dev="$1" size
+  local dev="$1" size label="$2" type
   # Use a single partition of a whole device
   # TODO:
-  #   * Consider gpt, or unpartitioned volumes
+  #   * Consider unpartitioned volumes
   #   * Error handling when partition(s) already exist
   #   * Deal with loop/nbd device names. See growpart code
-  size=$(( $( awk "\$4 ~ /"$( basename $dev )"/ { print \$3 }" /proc/partitions ) * 2 - 2048 ))
-    cat <<EOF | sfdisk $dev
-unit: sectors
 
-${dev}1 : start=     2048, size=  ${size}, Id=8e
+  size=$(( $( awk "\$4 ~ /"$( basename $dev )"/ { print \$3 }" /proc/partitions ) * 2 - 2048 ))
+  # if parted is not present, and this version of sfdisk
+  # does not support GPT then we are limited to 2TB
+  if [ $label = "gpt" ]; then
+    if $(sfdisk --help|grep gpt >/dev/null) ; then
+      label="label: gpt"
+      type=""
+      size=$(( $size - 34 )) #34 is the first usable sector for GPT labels
+    else
+      Info "Your version of sfdisk does not support GPT labels. Will use MBR instead but partition size will be limited to 2TB"
+      label=""
+      type=", Id=8e"
+      # 2TB in sectors - 2048
+      if [ $size -gt 4294965248 ]; then size=4294965248; fi
+    fi
+  elif [ $label = "msdos" ]; then
+    label=""
+  fi
+
+  cat <<EOF | sfdisk $dev
+unit: sectors
+$label
+
+${dev}1 : start=     2048, size=  ${size}${type}
 EOF
 }
 
 create_partition_parted(){
-  local dev="$1"
-  parted $dev --script mklabel msdos mkpart primary 0% 100% set 1 lvm on
+  local dev="$1" label="$2"
+  parted $dev --script mklabel $label mkpart primary 0% 100% set 1 lvm on
 }
 
 create_partition() {
-  local dev="$1"
+  local dev="$1" size label
+
+  #Determine partition size. If larger than 2TB use GPT instead
+  size=$( awk "\$4 ~ /"$( basename $dev )"/ { print \$3 }" /proc/partitions )
+  if [ $size -gt 2147483648 ]; then
+    label="gpt"
+  else
+    label="msdos"
+  fi
 
   if [ -x "/usr/sbin/parted" ]; then
-    create_partition_parted $dev
+    create_partition_parted $dev $label
   else
-    create_partition_sfdisk $dev
+    create_partition_sfdisk $dev $label
   fi
 
   # Sometimes on slow storage it takes a while for partition device to
